@@ -1,0 +1,41 @@
+library(Seurat)
+library(dplyr)
+library(URD)
+
+# load data
+data_sub <- readRDS('data/AMY/URD_subset.rds')
+
+# create URD object
+count.data = data_sub@assays$RNA$counts
+meta.data = data_sub@meta.data
+URD.data = createURD(count.data = count.data,meta = meta.data,min.cells = 0,min.genes = 0)
+
+# choose var genes
+anno_ordered <- sort(unique(URD.data@group.ids$anno))
+cells.each.anno <- lapply(anno_ordered, function(anno) rownames(URD.data@meta)[which(URD.data@meta$anno_all ==anno)])
+var.genes.by.anno <- lapply(1:length(anno_ordered), function(n) findVariableGenes(URD.data, cells.fit = cells.each.anno[[n]], set.object.var.genes = F, diffCV.cutoff = 0.4, mean.min = 0.005, mean.max = 100, main.use = anno_ordered[[n]], do.plot = F))
+var.genes <- sort(unique(unlist(var.genes.by.anno)))
+length(var.genes)
+URD.data@var.genes <- var.genes
+
+# dim reduction
+URD.data <- calcPCA(URD.data,mp.factor=2)
+URD.data <- calcDM(URD.data,knn = 100)
+
+# set root
+root.cells <- cellsInCluster(URD.data, "anno", c('RG1','RG2'))
+
+# get pseudotime
+data.floods <- floodPseudotime(URD.data, root.cells = root.cells,n=40, minimum.cells.flooded = 2, verbose=F)
+URD.data <- floodPseudotimeProcess(URD.data, data.floods, floods.name="pseudotime")
+URD.data@group.ids$tip.clusters <- NULL
+URD.data.biased.tm <- as.matrix(pseudotimeWeightTransitionMatrix(URD.data, "pseudotime", logistic.params=URD.data.ptlogistic))
+URD.data.walks <- simulateRandomWalksFromTips(URD.data, tip.group.id="tip.clusters", root.cells=root.cells, transition.matrix = URD.data.biased.tm, verbose = T)
+URD.data <- processRandomWalksFromTips(URD.data, URD.data.walks, verbose = F)
+
+# build URD tree
+data.tree <- loadTipCells(URD.data, "tip.clusters")
+data.tree <- buildTree(data.tree, pseudotime = "pseudotime", divergence.method = "preference", cells.per.pseudotime.bin = 80, bins.per.pseudotime.window = 20 ,save.all.breakpoint.info = T, p.thresh=0.01)
+
+# plot
+plotTree(data.tree,'anno_all')
